@@ -124,65 +124,99 @@ class QueryProcessor {
   
   static executeQuery(queryAnalysis) {
     let results = mockDataDB.getAllData();
-    
-    // Apply filters
+    let whereClauses = [];
+    const uniqueConditions = new Set(); // Track unique conditions
+
+    // Apply filters and build WHERE clauses
     if (queryAnalysis.filters && queryAnalysis.filters.length > 0) {
-      results = results.filter(item => {
-        return queryAnalysis.filters.every(filter => {
-          if (filter.includes('==')) {
-            const [field, value] = filter.split('==').map(s => s.trim().replace(/'/g, ''));
-            return item[field] == value;
-          } else if (filter.includes('!=')) {
-            const [field, value] = filter.split('!=').map(s => s.trim().replace(/'/g, ''));
-            return item[field] != value;
-          } else if (filter.includes('>')) {
-            const [field, value] = filter.split('>').map(s => s.trim());
-            return item[field] > Number(value);
-          } else if (filter.includes('<')) {
-            const [field, value] = filter.split('<').map(s => s.trim());
-            return item[field] < Number(value);
-          }
-          return true;
+        results = results.filter(item => {
+            return queryAnalysis.filters.every(filter => {
+                let condition = '';
+                if (filter.includes('==')) {
+                    const [field, value] = filter.split('==').map(s => s.trim().replace(/'/g, ''));
+                    condition = `${field} = '${value}'`;
+                    if (!uniqueConditions.has(condition)) {
+                        whereClauses.push(condition);
+                        uniqueConditions.add(condition);
+                    }
+                    return item[field] == value;
+                } else if (filter.includes('!=')) {
+                    const [field, value] = filter.split('!=').map(s => s.trim().replace(/'/g, ''));
+                    condition = `${field} != '${value}'`;
+                    if (!uniqueConditions.has(condition)) {
+                        whereClauses.push(condition);
+                        uniqueConditions.add(condition);
+                    }
+                    return item[field] != value;
+                } else if (filter.includes('>')) {
+                    const [field, value] = filter.split('>').map(s => s.trim());
+                    condition = `${field} > ${value}`;
+                    if (!uniqueConditions.has(condition)) {
+                        whereClauses.push(condition);
+                        uniqueConditions.add(condition);
+                    }
+                    return item[field] > Number(value);
+                } else if (filter.includes('<')) {
+                    const [field, value] = filter.split('<').map(s => s.trim());
+                    condition = `${field} < ${value}`;
+                    if (!uniqueConditions.has(condition)) {
+                        whereClauses.push(condition);
+                        uniqueConditions.add(condition);
+                    }
+                    return item[field] < Number(value);
+                }
+                return true;
+            });
         });
-      });
     }
+
+    // Build SELECT clause
+    const selectFields = queryAnalysis.fields && queryAnalysis.fields.length > 0 
+        ? queryAnalysis.fields.join(', ') 
+        : '*';
     
-    // Sort results
+    // Build ORDER BY clause
+    let orderByClause = '';
     if (queryAnalysis.sort) {
-      const { field, order } = queryAnalysis.sort;
-      results.sort((a, b) => {
-        if (order === 'asc') return a[field] > b[field] ? 1 : -1;
-        return a[field] < b[field] ? 1 : -1;
-      });
+        const { field, order } = queryAnalysis.sort;
+        orderByClause = ` ORDER BY ${field} ${order.toUpperCase()}`;
     }
     
-    // Limit results
+    // Build LIMIT clause
+    let limitClause = '';
     if (queryAnalysis.limit) {
-      results = results.slice(0, queryAnalysis.limit);
+        limitClause = ` LIMIT ${queryAnalysis.limit}`;
     }
     
+    // Construct full SQL query
+    const sqlQuery = `SELECT ${selectFields} FROM products` +
+        (whereClauses.length > 0 ? ` WHERE ${whereClauses.join(' AND ')}` : '') +
+        orderByClause +
+        limitClause;
+
     // Select only requested fields
     if (queryAnalysis.fields && queryAnalysis.fields.length > 0) {
-      results = results.map(item => {
-        const filteredItem = {};
-        queryAnalysis.fields.forEach(field => {
-          if (item.hasOwnProperty(field)) {
-            filteredItem[field] = item[field];
-          }
+        results = results.map(item => {
+            const filteredItem = {};
+            queryAnalysis.fields.forEach(field => {
+                if (item.hasOwnProperty(field)) {
+                    filteredItem[field] = item[field];
+                }
+            });
+            return filteredItem;
         });
-        return filteredItem;
-      });
     }
     
     return {
-      data: results,
-      stats: {
-        recordsReturned: results.length,
-        executionTimeMs: Math.random() * 100 + 50,
-        complexity: this.calculateComplexity(queryAnalysis)
-      }
+        data: results,
+        stats: {
+            recordsReturned: results.length,
+            executionTimeMs: Math.random() * 100 + 50,
+            complexity: this.calculateComplexity(queryAnalysis)
+        },
+        sqlQuery: sqlQuery
     };
-  }
+}
 }
 
 // API Endpoints
@@ -215,11 +249,14 @@ app.post('/query', authenticate, async (req, res) => {
       apiKey: req.apiKey,
       query,
       analysis: queryAnalysis,
-      results: results.stats
+      results: results.stats,
+      sqlQuery: results.sqlQuery
     });
     
     res.json({
-      ...results,
+      data: results.data,
+      sqlQuery: results.sqlQuery,
+      stats: results.stats,
       queryAnalysis,
       validation: {
         notes: validation.issues.length ? validation.issues : ['Query validated successfully'],
